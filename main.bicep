@@ -172,16 +172,17 @@ resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in s
 }]
 
 // ---- VNet (must exist before PE/links) ----
+// NSGs
+resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in subnets: { ... }]
+
+// VNet waits for NSGs (so subnets can attach them)
 resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
   name: vnetName
   location: location
   tags: tags
-  // make sure NSGs exist before we attach them to subnets
   dependsOn: [ for n in nsgs: n ]
   properties: {
-    addressSpace: {
-      addressPrefixes: [ vnetCidr ]
-    }
+    addressSpace: { addressPrefixes: [ vnetCidr ] }
     subnets: [for s in subnets: {
       name: s.name
       properties: {
@@ -196,12 +197,23 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
   }
 }
 
+// DNS links (Bicep infers links → vnet from id usage; explicit dependsOn not required)
+resource pdzBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
+  name: '${vnet.name}-link'
+  parent: pdzBlob
+  location: 'global'
+  properties: {
+    virtualNetwork: { id: vnet.id }
+    registrationEnabled: false
+  }
+}
+
 
 // -----------------------
 // Storage Account (public network access for AFD Standard) + Static Website
 // -----------------------
 // Enable Static Website the supported way
-// Storage Account
+// Storage Account (leave public so AFD Standard can reach it)
 resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: storageName
   location: location
@@ -228,6 +240,7 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
     accessTier: 'Hot'
   }
 }
+
 
 // ✅ Enable Static Website on the blob service
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
@@ -478,9 +491,7 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
 resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2023-05-01' = {
   name: wafPolicyName
   location: 'Global'
-  sku: {
-    name: 'Standard_AzureFrontDoor'
-  }
+  sku: { name: 'Standard_AzureFrontDoor' }
   properties: {
     policySettings: {
       enabledState: 'Enabled'
@@ -490,7 +501,6 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2023-05-01' = {
     managedRules: {
       managedRuleSets: [
         {
-          // ⬅️ This is the correct ruleset for AFD Std/Prm
           ruleSetType: 'Microsoft_DefaultRuleSet'
           ruleSetVersion: '2.1'
         }
