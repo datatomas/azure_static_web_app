@@ -13,6 +13,10 @@ targetScope = 'resourceGroup'
 @description('Deployment environment tag (e.g., dev/test/prod).')
 param environment string = 'prod'
 
+@description('Region for the AFD Private Link endpoint (pick a supported region near your origin, e.g., eastus2).')
+param afdPrivateLinkLocation string = 'eastus2'
+
+
 @description('Informational only. Does not change deployment scope.')
 param resourceGroupName string = resourceGroup().name
  
@@ -218,25 +222,31 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   tags: tags
   sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
-  properties: {
-    minimumTlsVersion: 'TLS1_2'
-    allowBlobPublicAccess: false
-    supportsHttpsTrafficOnly: true
-    networkAcls: {
-      defaultAction: 'Allow'
-      bypass: 'AzureServices'
-      ipRules: []
-      virtualNetworkRules: []
-    }
-    encryption: {
-      keySource: 'Microsoft.Storage'
-      services: {
-        blob: { enabled: true }
-        file: { enabled: true }
-      }
-    }
-    accessTier: 'Hot'
+ // resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = { ... }
+properties: {
+  minimumTlsVersion: 'TLS1_2'
+  allowBlobPublicAccess: false
+  supportsHttpsTrafficOnly: true
+
+  // CHANGED: lock down to Private Link only
+  publicNetworkAccess: 'Disabled'
+  networkAcls: {
+    defaultAction: 'Deny'           // was 'Allow'
+    bypass: 'None'                  // was 'AzureServices'
+    ipRules: []
+    virtualNetworkRules: []
   }
+
+  encryption: {
+    keySource: 'Microsoft.Storage'
+    services: {
+      blob: { enabled: true }
+      file: { enabled: true }
+    }
+  }
+  accessTier: 'Hot'
+}
+
 }
 
 
@@ -273,16 +283,17 @@ resource pdzWeb 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 
 
 
+// Replace your current pdzWebLink block with this (no dependsOn needed)
 resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   name: '${vnet.name}-link'
   parent: pdzWeb
   location: 'global'
-  dependsOn: [ pdzWeb, vnet ]  // <---
   properties: {
     virtualNetwork: { id: vnet.id }
     registrationEnabled: false
   }
 }
+
 
 // -----------------------
 // Optional: Jump VM (Ubuntu) in jump subnet
@@ -363,7 +374,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = if (createJumpVm) {
 resource afdProfile 'Microsoft.Cdn/profiles@2023-05-01' = {
   name: afdProfileName
   location: 'Global'
-  sku: { name: 'Standard_AzureFrontDoor' }
+  sku: { name: 'Premium_AzureFrontDoor' }  // was 'Standard_AzureFrontDoor'
   tags: tags
 }
 
@@ -388,8 +399,8 @@ resource afdEndpoint 'Microsoft.Cdn/profiles/afdEndpoints@2023-05-01' = {
   }
 }
 
-// Origin group (under profile)
-resource afdOg 'Microsoft.Cdn/profiles/originGroups@2023-05-01' = {
+// Origin group (parent of the origin)
+resource afdOg 'Microsoft.Cdn/profiles/originGroups@2025-06-01' = {
   name: afdOriginGroupName
   parent: afdProfile
   properties: {
@@ -408,8 +419,14 @@ resource afdOg 'Microsoft.Cdn/profiles/originGroups@2023-05-01' = {
   }
 }
 
-// Origin (under origin group) - public static website host
-resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
+// RuleSet (parent for 'addSecHeaders' rule)
+resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2025-06-01' = {
+  name: afdRuleSetName
+  parent: afdProfile
+}
+
+// Origin group (under profile)
+resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2025-06-01' = {
   name: afdOriginName
   parent: afdOg
   properties: {
@@ -417,14 +434,23 @@ resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
     originHostHeader: storageWebHost
     httpPort: 80
     httpsPort: 443
+
+    // AFD Premium Shared Private Link → Storage (Static Website = groupId 'web')
+    sharedPrivateLinkResource: {
+  groupId: 'web'
+  privateLink: { id: sa.id }
+  privateLinkLocation: afdPrivateLinkLocation     // <-- was: location
+  requestMessage: 'AFD → Storage Static Website private link'
+}
   }
 }
 
+
+
 // Route (under endpoint) (adds dependsOn so custom domains exist first)
-resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
+resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
   name: afdRouteName
   parent: afdEndpoint
-  // Ensure all custom domains are created before the route references them
   dependsOn: [ for d in afdDomains: d ]
   properties: {
     originGroup: { id: afdOg.id }
@@ -434,42 +460,43 @@ resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
     supportedProtocols: [ 'Http', 'Https' ]
     linkToDefaultDomain: 'Enabled'
     customDomains: [ for id in afdDomainIds: { id: id } ]
+    ruleSets: [ { id: afdRuleSet.id } ] // <— associate your ruleset so headers apply
   }
 }
 
 
 // Optional: RuleSet to add security headers (older API to avoid typeName warnings)
-resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2023-05-01' = {
-  name: afdRuleSetName
-  parent: afdProfile
-}
-
-resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
+// REPLACE your existing afdRule block with this:
+resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
   name: 'addSecHeaders'
   parent: afdRuleSet
-  properties: any({
+  properties: {
     order: 1
     conditions: []
-    actions: [
-      {
-        name: 'ModifyResponseHeader'
-        parameters: {
-          headerAction: 'Overwrite'
-          headerName: 'Strict-Transport-Security'
-          value: 'max-age=31536000; includeSubDomains; preload'
-        }
-      }
-      {
-        name: 'ModifyResponseHeader'
-        parameters: {
-          headerAction: 'Overwrite'
-          headerName: 'X-Content-Type-Options'
-          value: 'nosniff'
-        }
-      }
-    ]
-  })
+   actions: [
+  {
+    name: 'ModifyResponseHeader'
+    parameters: {
+      typeName: 'DeliveryRuleHeaderActionParameters'
+      headerAction: 'Overwrite'
+      headerName: 'Strict-Transport-Security'
+      value: 'max-age=31536000; includeSubDomains; preload'
+    }
+  }
+  {
+    name: 'ModifyResponseHeader'
+    parameters: {
+      typeName: 'DeliveryRuleHeaderActionParameters'
+      headerAction: 'Overwrite'
+      headerName: 'X-Content-Type-Options'
+      value: 'nosniff'
+    }
+  }
+]
+
+  }
 }
+
 
 
 // -----------------------
@@ -478,12 +505,12 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
 // -----------------------
 // WAF policy (Standard AFD) — fixed for current API + ruleset
 // -----------------------
-resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
+// REPLACE your existing afdWaf block with this:
+resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-06-01' = {
   name: wafPolicyName
   location: 'Global'
   sku: {
-    // Keep Standard unless you plan to use DRS 2.x (Premium only)
-    name: 'Standard_AzureFrontDoor'
+    name: 'Premium_AzureFrontDoor'
   }
   properties: {
     policySettings: {
@@ -495,21 +522,19 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
       managedRuleSets: [
         {
           ruleSetType: 'Microsoft_DefaultRuleSet'
-          // ✅ Standard tier supports up to DRS 1.1. Use '2.1' only if you switch to Premium.
-          ruleSetVersion: '1.1'
+          ruleSetVersion: '2.1'
         }
       ]
     }
-    // (optional) customRules/rateLimitRules can be added later
   }
 }
 
 
+
 //afdSecPolicy (adds dependsOn so domain IDs resolve)
-resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2024-02-01' = {
+resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2025-06-01' = {
   name: 'waf-assoc'
   parent: afdProfile
-  // Ensure AFD custom domains exist before associating WAF to them
   dependsOn: [ for d in afdDomains: d ]
   properties: {
     parameters: {
