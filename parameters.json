@@ -1,24 +1,18 @@
-
+{
   "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "location": {
-      "value": "mexicocentral"
-    },
-    "environment": {
-      "value": "prod"
-    },
-    "domainName": {
-      "value": "hotelespueblitoboyacense.com"
-    },
-    "storageName": {
-      "value": "pueblitoposadastatic"
-    },
-    "vnetName": {
-      "value": "pueblito_posada_vnet_01"
-    },
-    "wafPolicyName": {
-      "value": "pueblitoposadawafpolicy02"
+    "location": { "value": "mexicocentral" },
+    "environment": { "value": "prod" },
+    "vnetName": { "value": "pueblito_posada_vnet_01" },
+    "storageName": { "value": "pueblitoposadastatic" },
+    "wafPolicyName": { "value": "pueblitoposadawafpolicy02" },
+     "adfname": { "value": "adfpueblito01" },
+    "afdCustomDomains": {
+      "value": [
+        "hotelespueblitoboyacense.com",
+        "hotelespueblitoboyacense.co"
+      ]
     }
   }
 }

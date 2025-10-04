@@ -1,19 +1,32 @@
-
 // ============================================================================
-// Pueblito Posada Infra (Mexico Central) — v1
-// Everything Bicep. Assumes only the external DNS domains already exist.
-// Creates: VNet (+NSGs), Storage (static website, private-only), Private Endpoints
-// (+ Private DNS zones + VNet links), optional Jump VM, and an Azure Front Door
-// Std/Prem SKELETON ready for Private Link + multi-domain routing.
+// Pueblito Posada Infra (Mexico Central) — v1 (AFD Standard)
+// Creates: VNet (+NSGs), Storage (static website), optional Private Endpoints
+// (for internal use), AFD Standard with WAF & custom domains.
+// NOTE: AFD Standard cannot use Private Link to reach the origin.
 // ============================================================================
 
 targetScope = 'resourceGroup'
 
 // -----------------------
-// Parameters (edit values at deploy time; keep names neutral)
+// Parameters
 // -----------------------
+@description('Deployment environment tag (e.g., dev/test/prod).')
+param environment string = 'prod'
+
+@description('Primary custom domain (optional if using afdCustomDomains).')
+param domainName string = ''
+
+@description('Custom domains to attach to AFD (e.g., ["example.com","example.co"]).')
+param afdCustomDomains array = empty(domainName) ? [] : [domainName]
+
+@description('Name for the AFD WAF policy.')
+param wafPolicyName string
+
+@description('Reserved for future Data Factory module; not used in this template (kept to match params).')
+param adfname string = ''
+
 @description('All resources (except globally-scoped ones like AFD) use this Azure region.')
-param location string = 'mexicocentral'
+param location string
 
 @description('Virtual network name.')
 param vnetName string
@@ -23,15 +36,12 @@ param vnetCidr string = '10.40.0.0/16'
 
 @description('Subnets to create. Each will get its own NSG with baseline rules. Mark one as the PE subnet.')
 param subnets array = [
-  // Jump/bastion/admin subnet (example)
   {
     name: 'snet-jump'
     prefix: '10.40.10.0/24'
     isPrivateEndpointSubnet: false
-    // OPTIONAL: set a CIDR to allow SSH to jump from Internet. Use your own IP/CIDR.
     allowSshFrom: '0.0.0.0/0'
   }
-  // Private Endpoint subnet (no NVA, disable PE network policies)
   {
     name: 'snet-pe'
     prefix: '10.40.20.0/24'
@@ -39,7 +49,7 @@ param subnets array = [
   }
 ]
 
-@description('Storage account name (lowercase, 3-24). Static website + private endpoints are configured.')
+@description('Storage account name (lowercase, 3-24). Static website is enabled.')
 @minLength(3)
 @maxLength(24)
 param storageName string
@@ -62,7 +72,7 @@ param adminUsername string = 'azureuser'
 @description('SSH public key for the jump VM (ssh-rsa/ecdsa/ed25519).')
 param adminSshPublicKey string = ''
 
-// ---------- Azure Front Door (Std/Prem) skeleton params ----------
+// ---------- Azure Front Door (Standard) ----------
 @description('AFD profile name (Standard_AzureFrontDoor). Location is always Global.')
 param afdProfileName string = 'afd-pueblito'
 
@@ -81,22 +91,19 @@ param afdRouteName string = 'route-static-https'
 @description('AFD rule set name (example: add security headers).')
 param afdRuleSetName string = 'ruleset-sec-headers'
 
-@description('Custom domains to attach to AFD later. Keep empty to skip. Example: ["hotelespueblitoboyacense.com","hotelespueblitoboyacense.co"]')
-param afdCustomDomains array = []
-
 // -----------------------
 // Locals
 // -----------------------
 var tags = {
   workload: 'pueblito-posada'
-  env: 'prod'
+  env: environment
 }
 
 var peSubnetName = first([for s in subnets: s.name if (bool(s.isPrivateEndpointSubnet))])
 var jumpSubnetName = length([for s in subnets: s if (!bool(s.isPrivateEndpointSubnet))]) > 0 ? first([for s in subnets: s.name if (!bool(s.isPrivateEndpointSubnet))]) : 'snet-jump'
 
 // -----------------------
-// Networking: NSGs (one per subnet) + VNet/Subnets
+// Networking: NSGs + VNet/Subnets
 // -----------------------
 resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in subnets: {
   name: 'nsg-${vnetName}-${s.name}'
@@ -104,7 +111,6 @@ resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in s
   tags: tags
   properties: {
     securityRules: union(
-      // Baseline allow VNet traffic, allow Azure LB probe
       [
         {
           name: 'Allow-VNet-Inbound'
@@ -135,7 +141,6 @@ resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in s
           }
         }
       ],
-      // Optional SSH allow for jump subnet if allowSshFrom is provided
       (contains(s, 'allowSshFrom') && !empty(string(s.allowSshFrom))) ? [
         {
           name: 'Allow-SSH-From-Admin'
@@ -162,16 +167,13 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
   tags: tags
   properties: {
     addressSpace: {
-      addressPrefixes: [
-        vnetCidr
-      ]
+      addressPrefixes: [ vnetCidr ]
     }
     subnets: [for s in subnets: {
       name: s.name
       properties: {
         addressPrefix: s.prefix
         privateEndpointNetworkPolicies: bool(s.isPrivateEndpointSubnet) ? 'Disabled' : 'Enabled'
-        // For PE subnets, also recommended to disable privateLinkServiceNetworkPolicies
         privateLinkServiceNetworkPolicies: 'Disabled'
         networkSecurityGroup: {
           id: resourceId('Microsoft.Network/networkSecurityGroups', 'nsg-${vnetName}-${s.name}')
@@ -182,22 +184,22 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
 }
 
 // -----------------------
-// Storage Account (private only) + Static Website
+// Storage Account (public network access for AFD Standard) + Static Website
 // -----------------------
 resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: storageName
   location: location
   tags: tags
-  sku: {
-    name: 'Standard_LRS'
-  }
+  sku: { name: 'Standard_LRS' }
   kind: 'StorageV2'
   properties: {
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
     supportsHttpsTrafficOnly: true
+    // IMPORTANT: AFD Standard cannot use Private Link to origin;
+    // keep public network access allowed so AFD can reach the web endpoint.
     networkAcls: {
-      defaultAction: 'Deny'
+      defaultAction: 'Allow'
       bypass: 'AzureServices'
       ipRules: []
       virtualNetworkRules: []
@@ -213,7 +215,6 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-// Enable Static Website (native resource)
 resource staticSite 'Microsoft.Storage/storageAccounts/staticWebsite@2023-01-01' = {
   name: '${sa.name}/default'
   properties: {
@@ -224,7 +225,8 @@ resource staticSite 'Microsoft.Storage/storageAccounts/staticWebsite@2023-01-01'
 }
 
 // -----------------------
-// Private DNS zones + VNet links (blob + web for static sites)
+// (Optional/Internal) Private DNS zones + VNet links + PEs
+// NOTE: These PEs are usable for internal VNet access, NOT by AFD Standard.
 // -----------------------
 resource pdzBlob 'Microsoft.Network/privateDnsZones@2020-06-01' = {
   name: 'privatelink.blob.core.windows.net'
@@ -256,9 +258,6 @@ resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-
   }
 }
 
-// -----------------------
-// Private Endpoints (blob + web) in PE subnet + zone groups wiring
-// -----------------------
 var peSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
 
 resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = {
@@ -266,17 +265,13 @@ resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = {
   location: location
   tags: tags
   properties: {
-    subnet: {
-      id: peSubnetId
-    }
+    subnet: { id: peSubnetId }
     privateLinkServiceConnections: [
       {
         name: 'sa-blob-pls'
         properties: {
           privateLinkServiceId: sa.id
-          groupIds: [
-            'blob'
-          ]
+          groupIds: [ 'blob' ]
           requestMessage: 'PE for Storage Blob'
         }
       }
@@ -290,9 +285,7 @@ resource peBlobDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups
     privateDnsZoneConfigs: [
       {
         name: 'blob-zone'
-        properties: {
-          privateDnsZoneId: pdzBlob.id
-        }
+        properties: { privateDnsZoneId: pdzBlob.id }
       }
     ]
   }
@@ -303,17 +296,13 @@ resource peWeb 'Microsoft.Network/privateEndpoints@2023-09-01' = {
   location: location
   tags: tags
   properties: {
-    subnet: {
-      id: peSubnetId
-    }
+    subnet: { id: peSubnetId }
     privateLinkServiceConnections: [
       {
         name: 'sa-web-pls'
         properties: {
           privateLinkServiceId: sa.id
-          groupIds: [
-            'web'
-          ]
+          groupIds: [ 'web' ]
           requestMessage: 'PE for Storage Static Website'
         }
       }
@@ -327,9 +316,7 @@ resource peWebDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@
     privateDnsZoneConfigs: [
       {
         name: 'web-zone'
-        properties: {
-          privateDnsZoneId: pdzWeb.id
-        }
+        properties: { privateDnsZoneId: pdzWeb.id }
       }
     ]
   }
@@ -363,9 +350,7 @@ resource nic 'Microsoft.Network/networkInterfaces@2023-09-01' = if (createJumpVm
           subnet: {
             id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, jumpSubnetName)
           }
-          publicIPAddress: createJumpPublicIp ? {
-            id: pip.id
-          } : null
+          publicIPAddress: createJumpPublicIp ? { id: pip.id } : null
         }
       }
     ]
@@ -377,9 +362,7 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = if (createJumpVm) {
   location: location
   tags: tags
   properties: {
-    hardwareProfile: {
-      vmSize: 'Standard_B2s'
-    }
+    hardwareProfile: { vmSize: 'Standard_B2s' }
     osProfile: {
       computerName: jumpVmName
       adminUsername: adminUsername
@@ -408,42 +391,35 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = if (createJumpVm) {
         diskSizeGB: 64
       }
     }
-    networkProfile: {
-      networkInterfaces: [
-        {
-          id: nic.id
-        }
-      ]
-    }
+    networkProfile: { networkInterfaces: [ { id: nic.id } ] }
   }
 }
 
 // -----------------------
-// Azure Front Door (Standard_AzureFrontDoor) — SKELETON
-// NOTE: This section provisions a functional profile + endpoint + origin group
-// and a route with HTTP->HTTPS redirect. You will likely need to tweak
-// the Private Link binding on the Origin to point to the storage "web" endpoint.
+// Azure Front Door (Standard_AzureFrontDoor)
 // -----------------------
-
 resource afdProfile 'Microsoft.Cdn/profiles@2023-05-01' = {
   name: afdProfileName
   location: 'Global'
-  sku: {
-    name: 'Standard_AzureFrontDoor'
-  }
+  sku: { name: 'Standard_AzureFrontDoor' }
   tags: tags
 }
+
+resource afdDomains 'Microsoft.Cdn/profiles/customDomains@2024-02-01' = [for d in afdCustomDomains: {
+  name: '${afdProfile.name}/${replace(d, '.', '-') }'
+  properties: {
+    hostName: d
+    tlsSettings: { certificateType: 'ManagedCertificate' }
+  }
+}]
 
 resource afdEndpoint 'Microsoft.Cdn/profiles/endpoints@2023-05-01' = {
   name: '${afdProfile.name}/${afdEndpointName}'
   location: 'Global'
   tags: tags
-  properties: {
-    enabledState: 'Enabled'
-  }
+  properties: { enabledState: 'Enabled' }
 }
 
-// Origin group (simple health probe)
 resource afdOg 'Microsoft.Cdn/profiles/originGroups@2023-05-01' = {
   name: '${afdProfile.name}/${afdOriginGroupName}'
   properties: {
@@ -462,11 +438,7 @@ resource afdOg 'Microsoft.Cdn/profiles/originGroups@2023-05-01' = {
   }
 }
 
-// Origin (Storage Static Website host).
-// IMPORTANT: To lock origin privately, set up AFD Private Link to the Storage "web" subresource.
-// That requires "privateLink" settings on the origin which may vary by API version.
-// This skeleton uses public connectivity (works end-to-end), while your Storage stays private
-// to the VNet via PE; if you want AFD-only access, switch to Private Link after first deploy.
+// Origin points at Storage Static Website public host (no Private Link on Standard)
 resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
   name: '${afdProfile.name}/${afdOg.name}/${afdOriginName}'
   properties: {
@@ -474,41 +446,25 @@ resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
     originHostHeader: '${storageName}.web.core.windows.net'
     httpPort: 80
     httpsPort: 443
-    // TODO: Add "privateLink" block for Storage "web" subresource if you want private origin.
-    // Example shape (verify properties in your subscription API version):
-    // privateLink: {
-    //   privateLinkResourceId: sa.id
-    //   location: location
-    //   requestMessage: 'AFD->Storage(web)'
-    // }
   }
 }
 
-// Route (HTTP->HTTPS redirect; attach to endpoint)
 resource afdRoute 'Microsoft.Cdn/profiles/routes@2023-05-01' = {
   name: '${afdProfile.name}/${afdRouteName}'
   properties: {
-    originGroup: {
-      id: afdOg.id
-    }
-    patternsToMatch: [
-      '/*'
-    ]
-    endpointIds: [
-      afdEndpoint.id
-    ]
-    httpsRedirect: 'Enabled' // This enforces http->https
+    originGroup: { id: afdOg.id }
+    patternsToMatch: [ '/*' ]
+    endpointIds: [ afdEndpoint.id ]
+    httpsRedirect: 'Enabled'
     forwardingProtocol: 'HttpsOnly'
-    supportedProtocols: [
-      'Http'
-      'Https'
-    ]
-    linkToDefaultDomain: 'Enabled' // keeps <endpoint>.azurefd.net usable
-    // If you add custom domains later, associate them here via "customDomains" property.
+    supportedProtocols: [ 'Http', 'Https' ]
+    linkToDefaultDomain: 'Enabled'
+    // attach any custom domains
+    customDomains: [ for cd in afdDomains: { id: cd.id } ]
   }
 }
 
-// Optional: RuleSet to add a couple of security headers on responses
+// Optional: RuleSet to add security headers
 resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2023-05-01' = {
   name: '${afdProfile.name}/${afdRuleSetName}'
 }
@@ -517,7 +473,7 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
   name: '${afdProfile.name}/${afdRuleSet.name}/add-sec-headers'
   properties: {
     order: 1
-    conditions: [] // always apply
+    conditions: []
     actions: [
       {
         name: 'ModifyResponseHeader'
@@ -540,43 +496,65 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
 }
 
 // Attach the RuleSet to the Route
-resource afdRouteUpdate 'Microsoft.Cdn/profiles/routes@2023-05-01' existing = {
-  name: '${afdProfile.name}/${afdRouteName}'
-}
-resource attachRuleSet 'Microsoft.Cdn/profiles/routes@2023-05-01' = {
+resource afdRouteAttach 'Microsoft.Cdn/profiles/routes@2023-05-01' = {
   name: '${afdProfile.name}/${afdRouteName}'
   properties: {
-    originGroup: {
-      id: afdOg.id
-    }
-    patternsToMatch: [
-      '/*'
-    ]
-    endpointIds: [
-      afdEndpoint.id
-    ]
+    originGroup: { id: afdOg.id }
+    patternsToMatch: [ '/*' ]
+    endpointIds: [ afdEndpoint.id ]
     httpsRedirect: 'Enabled'
     forwardingProtocol: 'HttpsOnly'
-    supportedProtocols: [
-      'Http'
-      'Https'
-    ]
+    supportedProtocols: [ 'Http', 'Https' ]
     linkToDefaultDomain: 'Enabled'
-    ruleSets: [
-      {
-        id: afdRuleSet.id
-      }
-    ]
+    customDomains: [ for cd in afdDomains: { id: cd.id } ]
+    ruleSets: [ { id: afdRuleSet.id } ]
   }
-  dependsOn: [
-    afdRule
-  ]
+  dependsOn: [ afdRule ]
+}
+
+// -----------------------
+// WAF policy (Standard) + association to domains
+// -----------------------
+resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-06-01' = {
+  name: wafPolicyName
+  location: 'Global'
+  sku: { name: 'Standard_AzureFrontDoor' }
+  properties: {
+    policySettings: {
+      enabledState: 'Enabled'
+      mode: 'Prevention'
+      defaultCustomBlockResponseStatusCode: 403
+      defaultCustomBlockResponseBody: ''
+      defaultRedirectUrl: ''
+    }
+    managedRules: {
+      managedRuleSets: [
+        { ruleSetType: 'OWASP', ruleSetVersion: '3.2' }
+      ]
+    }
+  }
+}
+
+resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2024-02-01' = {
+  name: '${afdProfile.name}/waf-assoc'
+  properties: {
+    parameters: {
+      type: 'WebApplicationFirewall'
+      wafPolicy: { id: afdWaf.id }
+      associations: [
+        {
+          domains: [ for cd in afdDomains: { id: cd.id } ]
+          patternsToMatch: [ '/*' ]
+        }
+      ]
+    }
+  }
 }
 
 // -----------------------
 // Outputs
 // -----------------------
-output storageStaticWebEndpoint string = 'https://${storageName}.z13.web.core.windows.net'
+output storageStaticWebEndpoint string = 'https://${storageName}.web.core.windows.net'
 output privateBlobDnsZone string = pdzBlob.name
 output privateWebDnsZone string = pdzWeb.name
 output afdDefaultHost string = '${afdEndpointName}.z01.azurefd.net'
