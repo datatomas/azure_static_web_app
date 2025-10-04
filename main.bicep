@@ -200,6 +200,8 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
 // -----------------------
 // Storage Account (public network access for AFD Standard) + Static Website
 // -----------------------
+// Enable Static Website the supported way
+// Storage Account
 resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   name: storageName
   location: location
@@ -210,7 +212,6 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
     supportsHttpsTrafficOnly: true
-    // AFD Standard needs public reachability to the web endpoint
     networkAcls: {
       defaultAction: 'Allow'
       bypass: 'AzureServices'
@@ -228,15 +229,18 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-// Change ONLY the apiVersion
-resource staticSite 'Microsoft.Storage/storageAccounts/staticWebsite@2019-06-01' = {
+// ✅ Enable Static Website on the blob service
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   name: 'default'
   parent: sa
-  properties: {
-    enabled: true
-    indexDocument: staticIndex
-    errorDocument404Path: static404
-  }
+  // Use `any()` to avoid strict type warnings on this property block.
+  properties: any({
+    staticWebsite: {
+      enabled: true
+      indexDocument: staticIndex
+      errorDocument404Path: static404
+    }
+  })
 }
 
 // -----------------------
@@ -277,124 +281,6 @@ resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-
   properties: {
     virtualNetwork: { id: vnet.id }
     registrationEnabled: false
-  }
-}
-
-// PEs must wait for VNet (and Storage). Web PE also waits for Static Website.
-resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-${storageName}-blob'
-  location: location
-  tags: tags
-  dependsOn: [ vnet, sa ]  // <---
-  properties: {
-    subnet: { id: peSubnetId }
-    privateLinkServiceConnections: [
-      {
-        name: 'sa-blob-pls'
-        properties: {
-          privateLinkServiceId: sa.id
-          groupIds: [ 'blob' ]
-          requestMessage: 'PE for Storage Blob'
-        }
-      }
-    ]
-  }
-}
-
-resource peWeb 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-${storageName}-web'
-  location: location
-  tags: tags
-  dependsOn: [ vnet, sa, staticSite ]  // <---
-  properties: {
-    subnet: { id: peSubnetId }
-    privateLinkServiceConnections: [
-      {
-        name: 'sa-web-pls'
-        properties: {
-          privateLinkServiceId: sa.id
-          groupIds: [ 'web' ]
-          requestMessage: 'PE for Storage Static Website'
-        }
-      }
-    ]
-  }
-}
-
-resource peWebDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
-  name: 'default'
-  parent: peWeb
-  dependsOn: [ peWeb, pdzWeb ]  // <---
-  properties: {
-    privateDnsZoneConfigs: [
-      { name: 'web-zone', properties: { privateDnsZoneId: pdzWeb.id } }
-    ]
-  }
-}
-
-var peSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
-
-resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-${storageName}-blob'
-  location: location
-  tags: tags
-  properties: {
-    subnet: { id: peSubnetId }
-    privateLinkServiceConnections: [
-      {
-        name: 'sa-blob-pls'
-        properties: {
-          privateLinkServiceId: sa.id
-          groupIds: [ 'blob' ]
-          requestMessage: 'PE for Storage Blob'
-        }
-      }
-    ]
-  }
-}
-
-resource peBlobDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
-  name: 'default'
-  parent: peBlob
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'blob-zone'
-        properties: { privateDnsZoneId: pdzBlob.id }
-      }
-    ]
-  }
-}
-
-resource peWeb 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-${storageName}-web'
-  location: location
-  tags: tags
-  properties: {
-    subnet: { id: peSubnetId }
-    privateLinkServiceConnections: [
-      {
-        name: 'sa-web-pls'
-        properties: {
-          privateLinkServiceId: sa.id
-          groupIds: [ 'web' ]
-          requestMessage: 'PE for Storage Static Website'
-        }
-      }
-    ]
-  }
-}
-
-resource peWebDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
-  name: 'default'
-  parent: peWeb
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'web-zone'
-        properties: { privateDnsZoneId: pdzWeb.id }
-      }
-    ]
   }
 }
 
@@ -589,24 +475,31 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
 // -----------------------
 // WAF policy (Standard) + association to domains
 // -----------------------
-resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
+resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2023-05-01' = {
   name: wafPolicyName
   location: 'Global'
-  sku: { name: 'Standard_AzureFrontDoor' }
+  sku: {
+    name: 'Standard_AzureFrontDoor'
+  }
   properties: {
     policySettings: {
       enabledState: 'Enabled'
       mode: 'Prevention'
       defaultCustomBlockResponseStatusCode: 403
-      // defaultCustomBlockResponseBody omitted to avoid base64 pattern warning
     }
     managedRules: {
       managedRuleSets: [
-        { ruleSetType: 'OWASP', ruleSetVersion: '3.2' }
+        {
+          // ⬅️ This is the correct ruleset for AFD Std/Prm
+          ruleSetType: 'Microsoft_DefaultRuleSet'
+          ruleSetVersion: '2.1'
+        }
       ]
     }
   }
 }
+
+
 
 //afdSecPolicy (adds dependsOn so domain IDs resolve)
 resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2024-02-01' = {
