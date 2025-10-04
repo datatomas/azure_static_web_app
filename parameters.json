@@ -7,7 +7,7 @@
     "vnetName": { "value": "pueblito_posada_vnet_01" },
     "storageName": { "value": "pueblitoposadastatic" },
     "wafPolicyName": { "value": "pueblitoposadawafpolicy02" },
-     "adfname": { "value": "adfpueblito01" },
+    "adfname": { "value": "adfpueblito01" },
     "afdCustomDomains": {
       "value": [
         "hotelespueblitoboyacense.com",

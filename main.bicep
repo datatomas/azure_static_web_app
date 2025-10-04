@@ -13,6 +13,9 @@ targetScope = 'resourceGroup'
 @description('Deployment environment tag (e.g., dev/test/prod).')
 param environment string = 'prod'
 
+@description('Informational only. Does not change deployment scope.')
+param resourceGroupName string = resourceGroup().name
+ 
 @description('Primary custom domain (optional if using afdCustomDomains).')
 param domainName string = ''
 
@@ -94,10 +97,11 @@ param afdRuleSetName string = 'rulesetSecHeaders'
 // -----------------------
 // Locals
 // -----------------------
-var tags = {
+var tags = union({
   workload: 'pueblito-posada'
   env: environment
-}
+  rg: resourceGroupName
+}, empty(adfname) ? {} : { adfName: adfname })
 
 // Use the conventional names from the default subnets above
 var peSubnetName = 'snet-pe'
@@ -167,10 +171,13 @@ resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in s
   }
 }]
 
+// ---- VNet (must exist before PE/links) ----
 resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
   name: vnetName
   location: location
   tags: tags
+  // make sure NSGs exist before we attach them to subnets
+  dependsOn: [ for n in nsgs: n ]
   properties: {
     addressSpace: {
       addressPrefixes: [ vnetCidr ]
@@ -188,6 +195,7 @@ resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
     }]
   }
 }
+
 
 // -----------------------
 // Storage Account (public network access for AFD Standard) + Static Website
@@ -220,7 +228,8 @@ resource sa 'Microsoft.Storage/storageAccounts@2023-01-01' = {
   }
 }
 
-resource staticSite 'Microsoft.Storage/storageAccounts/staticWebsite@2023-01-01' = {
+// Change ONLY the apiVersion
+resource staticSite 'Microsoft.Storage/storageAccounts/staticWebsite@2019-06-01' = {
   name: 'default'
   parent: sa
   properties: {
@@ -248,10 +257,12 @@ resource pdzWeb 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 }
 
 
+// Private DNS VNet links must wait for both zone and VNet
 resource pdzBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   name: '${vnet.name}-link'
   parent: pdzBlob
   location: 'global'
+  dependsOn: [ pdzBlob, vnet ]  // <---
   properties: {
     virtualNetwork: { id: vnet.id }
     registrationEnabled: false
@@ -262,77 +273,13 @@ resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-
   name: '${vnet.name}-link'
   parent: pdzWeb
   location: 'global'
+  dependsOn: [ pdzWeb, vnet ]  // <---
   properties: {
     virtualNetwork: { id: vnet.id }
     registrationEnabled: false
   }
 }
 
-var peSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
-
-resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-${storageName}-blob'
-  location: location
-  tags: tags
-  properties: {
-    subnet: { id: peSubnetId }
-    privateLinkServiceConnections: [
-      {
-        name: 'sa-blob-pls'
-        properties: {
-          privateLinkServiceId: sa.id
-          groupIds: [ 'blob' ]
-          requestMessage: 'PE for Storage Blob'
-        }
-      }
-    ]
-  }
-}
-
-resource peBlobDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
-  name: 'default'
-  parent: peBlob
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'blob-zone'
-        properties: { privateDnsZoneId: pdzBlob.id }
-      }
-    ]
-  }
-}
-
-resource peWeb 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-${storageName}-web'
-  location: location
-  tags: tags
-  properties: {
-    subnet: { id: peSubnetId }
-    privateLinkServiceConnections: [
-      {
-        name: 'sa-web-pls'
-        properties: {
-          privateLinkServiceId: sa.id
-          groupIds: [ 'web' ]
-          requestMessage: 'PE for Storage Static Website'
-        }
-      }
-    ]
-  }
-}
-
-resource peWebDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
-  name: 'default'
-  parent: peWeb
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'web-zone'
-        properties: { privateDnsZoneId: pdzWeb.id }
-      }
-    ]
-  }
-}
 
 // -----------------------
 // Optional: Jump VM (Ubuntu) in jump subnet
