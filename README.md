@@ -18,7 +18,7 @@ It automates provisioning of the following:
 |------|----------|
 | `main.bicep` | Core Bicep template defining all resources |
 | `parameters.json` | Deployment parameters (editable) |
-| `deploy.sh` | CLI script to deploy the stack |
+| `deploy.sh` | CLI script to deploy the stack | Run from your linux distribution with --> ./deploy.sh "pueblitoboyacense" rg-posada-prd mexicocentral ./main.bicep ./params.json
 | `README.md` | Documentation (this file) |
 
 ---
