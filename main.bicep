@@ -470,10 +470,12 @@ resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2023-05-01' = {
   }
 }
 
-// Route (under endpoint)
+// Route (under endpoint) (adds dependsOn so custom domains exist first)
 resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
   name: afdRouteName
   parent: afdEndpoint
+  // Ensure all custom domains are created before the route references them
+  dependsOn: [ for d in afdDomains: d ]
   properties: {
     originGroup: { id: afdOg.id }
     patternsToMatch: [ '/*' ]
@@ -484,6 +486,7 @@ resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2023-05-01' = {
     customDomains: [ for id in afdDomainIds: { id: id } ]
   }
 }
+
 
 // Optional: RuleSet to add security headers (older API to avoid typeName warnings)
 resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2023-05-01' = {
@@ -541,9 +544,12 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
   }
 }
 
+//afdSecPolicy (adds dependsOn so domain IDs resolve)
 resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2024-02-01' = {
   name: 'waf-assoc'
   parent: afdProfile
+  // Ensure AFD custom domains exist before associating WAF to them
+  dependsOn: [ for d in afdDomains: d ]
   properties: {
     parameters: {
       type: 'WebApplicationFirewall'
