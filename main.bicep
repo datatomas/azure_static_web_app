@@ -280,6 +280,123 @@ resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-
   }
 }
 
+// PEs must wait for VNet (and Storage). Web PE also waits for Static Website.
+resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+  name: 'pe-${storageName}-blob'
+  location: location
+  tags: tags
+  dependsOn: [ vnet, sa ]  // <---
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: 'sa-blob-pls'
+        properties: {
+          privateLinkServiceId: sa.id
+          groupIds: [ 'blob' ]
+          requestMessage: 'PE for Storage Blob'
+        }
+      }
+    ]
+  }
+}
+
+resource peWeb 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+  name: 'pe-${storageName}-web'
+  location: location
+  tags: tags
+  dependsOn: [ vnet, sa, staticSite ]  // <---
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: 'sa-web-pls'
+        properties: {
+          privateLinkServiceId: sa.id
+          groupIds: [ 'web' ]
+          requestMessage: 'PE for Storage Static Website'
+        }
+      }
+    ]
+  }
+}
+
+resource peWebDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
+  name: 'default'
+  parent: peWeb
+  dependsOn: [ peWeb, pdzWeb ]  // <---
+  properties: {
+    privateDnsZoneConfigs: [
+      { name: 'web-zone', properties: { privateDnsZoneId: pdzWeb.id } }
+    ]
+  }
+}
+
+var peSubnetId = resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
+
+resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+  name: 'pe-${storageName}-blob'
+  location: location
+  tags: tags
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: 'sa-blob-pls'
+        properties: {
+          privateLinkServiceId: sa.id
+          groupIds: [ 'blob' ]
+          requestMessage: 'PE for Storage Blob'
+        }
+      }
+    ]
+  }
+}
+
+resource peBlobDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
+  name: 'default'
+  parent: peBlob
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'blob-zone'
+        properties: { privateDnsZoneId: pdzBlob.id }
+      }
+    ]
+  }
+}
+
+resource peWeb 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+  name: 'pe-${storageName}-web'
+  location: location
+  tags: tags
+  properties: {
+    subnet: { id: peSubnetId }
+    privateLinkServiceConnections: [
+      {
+        name: 'sa-web-pls'
+        properties: {
+          privateLinkServiceId: sa.id
+          groupIds: [ 'web' ]
+          requestMessage: 'PE for Storage Static Website'
+        }
+      }
+    ]
+  }
+}
+
+resource peWebDnsGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
+  name: 'default'
+  parent: peWeb
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'web-zone'
+        properties: { privateDnsZoneId: pdzWeb.id }
+      }
+    ]
+  }
+}
 
 // -----------------------
 // Optional: Jump VM (Ubuntu) in jump subnet
