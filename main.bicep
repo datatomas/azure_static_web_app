@@ -234,17 +234,18 @@ resource staticSite 'Microsoft.Storage/storageAccounts/staticWebsite@2023-01-01'
 // (Optional/Internal) Private DNS zones + VNet links + PEs
 // NOTE: These PEs are usable for internal VNet access, NOT by AFD Standard.
 // -----------------------
-resource pdzBlob 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.blob.' + az.environment().suffixes.storage
+resource pdresource pdzBlob 'Microsoft.Network/privateDnsZones@2020-06-01' = {
+  name: 'privatelink.blob.${az.environment().suffixes.storage}'
   location: 'global'
   tags: tags
 }
 
 resource pdzWeb 'Microsoft.Network/privateDnsZones@2020-06-01' = {
-  name: 'privatelink.web.' + az.environment().suffixes.storage
+  name: 'privatelink.web.${az.environment().suffixes.storage}'
   location: 'global'
   tags: tags
 }
+
 
 resource pdzBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   name: '${vnet.name}-link'
