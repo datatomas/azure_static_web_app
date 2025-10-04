@@ -89,7 +89,7 @@ param afdOriginName string = 'orig-storage-web'
 param afdRouteName string = 'route-static-https'
 
 @description('AFD rule set name (example: add security headers).')
-param afdRuleSetName string = 'ruleset-sec-headers'
+param afdRuleSetName string = 'rulesetSecHeaders'
 
 // -----------------------
 // Locals
@@ -495,9 +495,9 @@ resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2023-05-01' = {
 }
 
 resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
-  name: 'add-sec-headers'
+  name: 'addSecHeaders'
   parent: afdRuleSet
-  properties: {
+  properties: any({
     order: 1
     conditions: []
     actions: [
@@ -518,7 +518,7 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
         }
       }
     ]
-  }
+  })
 }
 
 
