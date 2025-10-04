@@ -172,8 +172,6 @@ resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in s
 }]
 
 // ---- VNet (must exist before PE/links) ----
-// NSGs
-resource nsgs 'Microsoft.Network/networkSecurityGroups@2023-09-01' = [for s in subnets: { ... }]
 
 // VNet waits for NSGs (so subnets can attach them)
 resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
@@ -274,17 +272,6 @@ resource pdzWeb 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 }
 
 
-// Private DNS VNet links must wait for both zone and VNet
-resource pdzBlobLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
-  name: '${vnet.name}-link'
-  parent: pdzBlob
-  location: 'global'
-  dependsOn: [ pdzBlob, vnet ]  // <---
-  properties: {
-    virtualNetwork: { id: vnet.id }
-    registrationEnabled: false
-  }
-}
 
 resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   name: '${vnet.name}-link'
