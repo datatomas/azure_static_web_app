@@ -475,10 +475,16 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2023-05-01' = {
 // -----------------------
 // WAF policy (Standard) + association to domains
 // -----------------------
-resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2023-05-01' = {
+// -----------------------
+// WAF policy (Standard AFD) — fixed for current API + ruleset
+// -----------------------
+resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
   name: wafPolicyName
   location: 'Global'
-  sku: { name: 'Standard_AzureFrontDoor' }
+  sku: {
+    // Keep Standard unless you plan to use DRS 2.x (Premium only)
+    name: 'Standard_AzureFrontDoor'
+  }
   properties: {
     policySettings: {
       enabledState: 'Enabled'
@@ -489,13 +495,14 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2023-05-01' = {
       managedRuleSets: [
         {
           ruleSetType: 'Microsoft_DefaultRuleSet'
-          ruleSetVersion: '2.1'
+          // ✅ Standard tier supports up to DRS 1.1. Use '2.1' only if you switch to Premium.
+          ruleSetVersion: '1.1'
         }
       ]
     }
+    // (optional) customRules/rateLimitRules can be added later
   }
 }
-
 
 
 //afdSecPolicy (adds dependsOn so domain IDs resolve)
