@@ -114,8 +114,6 @@ var tags = union({
 var peSubnetName = 'snet-pe'
 var jumpSubnetName = 'snet-jump'
 
-// Build AFD custom-domain IDs from names (no resource-collection references)
-var afdDomainIds = [for d in afdCustomDomains: resourceId('Microsoft.Cdn/profiles/customDomains', afdProfileName, replace(d, '.', '-'))]
 
 // Static-website public host (keep simple/portable)
 var storageWebHost = '${storageName}.web.${az.environment().suffixes.storage}'
@@ -252,26 +250,6 @@ properties: {
 
 }
 
-
-// ✅ Replace your current blobService block with this
-resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
-  name: 'default'
-  parent: sa
-  // use any(...) to bypass strict typing on staticWebsite
-  properties: any({
-    // optional hygiene
-    isVersioningEnabled: false
-    deleteRetentionPolicy: {
-      enabled: true
-      days: 7
-    }
-    staticWebsite: {
-      enabled: true
-      indexDocument: staticIndex
-      errorDocument404Path: static404
-    }
-  })
-}
 
 
 
@@ -462,14 +440,15 @@ resource vm 'Microsoft.Compute/virtualMachines@2023-09-01' = if (createJumpVm) {
 // -----------------------
 // Azure Front Door (Standard_AzureFrontDoor)
 // -----------------------
+// ---------- Azure Front Door (Premium) ----------
 resource afdProfile 'Microsoft.Cdn/profiles@2023-05-01' = {
   name: afdProfileName
   location: 'Global'
-  sku: { name: 'Premium_AzureFrontDoor' }  // was 'Standard_AzureFrontDoor'
+  sku: { name: 'Premium_AzureFrontDoor' }
   tags: tags
 }
 
-// Custom domains
+// Custom domains (collection)
 resource afdDomains 'Microsoft.Cdn/profiles/customDomains@2024-02-01' = [for d in afdCustomDomains: {
   name: replace(d, '.', '-')
   parent: afdProfile
@@ -479,7 +458,7 @@ resource afdDomains 'Microsoft.Cdn/profiles/customDomains@2024-02-01' = [for d i
   }
 }]
 
-// Endpoint (AFD-specific type)
+// Endpoint
 resource afdEndpoint 'Microsoft.Cdn/profiles/afdEndpoints@2023-05-01' = {
   name: afdEndpointName
   parent: afdProfile
@@ -490,7 +469,7 @@ resource afdEndpoint 'Microsoft.Cdn/profiles/afdEndpoints@2023-05-01' = {
   }
 }
 
-// Origin group (parent of the origin)
+// Origin group
 resource afdOg 'Microsoft.Cdn/profiles/originGroups@2025-06-01' = {
   name: afdOriginGroupName
   parent: afdProfile
@@ -510,56 +489,31 @@ resource afdOg 'Microsoft.Cdn/profiles/originGroups@2025-06-01' = {
   }
 }
 
-
-
-// Route — add explicit dependsOn on the origin to avoid race with SPLR
-// Route
-resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
-  name: afdRouteName
-  parent: afdEndpoint
+// Origin (Static Website endpoint) + Shared Private Link Resource
+resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2025-06-01' = {
+  name: afdOriginName
+  parent: afdOg
   properties: {
-    originGroup: { id: afdOg.id }
-    patternsToMatch: [ '/*' ]
-    httpsRedirect: 'Enabled'
-    forwardingProtocol: 'HttpsOnly'
-    supportedProtocols: [ 'Http', 'Https' ]
-    linkToDefaultDomain: 'Enabled'
-    // iterate the parameter array and index into the collection
-    customDomains: [ for (d, i) in afdCustomDomains: { id: afdDomains[i].id } ]
-    ruleSets: [ { id: afdRuleSet.id } ]
-  }
-}
-
-// WAF → domains association
-resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2025-06-01' = {
-  name: 'waf-assoc'
-  parent: afdProfile
-  properties: {
-    parameters: {
-      type: 'WebApplicationFirewall'
-      wafPolicy: { id: afdWaf.id }
-      associations: [
-        {
-          domains: [ for (d, i) in afdCustomDomains: { id: afdDomains[i].id } ]
-          patternsToMatch: [ '/*' ]
-        }
-      ]
+    hostName: '${storageName}.web.${az.environment().suffixes.storage}'
+    originHostHeader: '${storageName}.web.${az.environment().suffixes.storage}'
+    httpPort: 80
+    httpsPort: 443
+    sharedPrivateLinkResource: {
+      groupId: 'web'                               // Static Website subresource
+      privateLink: { id: sa.id }                   // Storage account
+      privateLinkLocation: afdPrivateLinkLocation  // e.g. eastus2 (supported SPLR region)
+      requestMessage: 'AFD → Storage Static Website private link'
     }
   }
 }
 
+// RuleSet (container)
 resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2025-06-01' = {
   name: afdRuleSetName
   parent: afdProfile
 }
 
-// Optional: RuleSet to add security headers (older API to avoid typeName warnings)
-resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
-  name: 'addSecHeaders'
-  parent: afdRuleSet
-  properties: {
-    order: 1
-    conditions: []
+// Rule (security headers)
 resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
   name: 'addSecHeaders'
   parent: afdRuleSet
@@ -589,20 +543,27 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
   }
 }
 
+// Route (attach RuleSet + Custom Domains)
+resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
+  name: afdRouteName
+  parent: afdEndpoint
+  properties: {
+    originGroup: { id: afdOg.id }
+    patternsToMatch: [ '/*' ]
+    httpsRedirect: 'Enabled'
+    forwardingProtocol: 'HttpsOnly'
+    supportedProtocols: [ 'Http', 'Https' ]
+    linkToDefaultDomain: 'Enabled'
+    customDomains: [ for (d, i) in afdCustomDomains: { id: afdDomains[i].id } ]
+    ruleSets: [ { id: afdRuleSet.id } ]
+  }
+}
 
-// -----------------------
-// WAF policy (Standard) + association to domains
-// -----------------------
-// -----------------------
-// WAF policy (Standard AFD) — fixed for current API + ruleset
-// -----------------------
-resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-04-15' = {
+// WAF policy (current/stable API)
+resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
   name: wafPolicyName
   location: 'Global'
-  sku: {
-    name: 'Premium_AzureFrontDoor'
-  }
-
+  sku: { name: 'Premium_AzureFrontDoor' }
   properties: {
     policySettings: {
       enabledState: 'Enabled'
@@ -620,9 +581,7 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-04-15' = {
   }
 }
 
-
-
-//afdSecPolicy (adds dependsOn so domain IDs resolve)
+// Associate WAF to the custom domains
 resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2025-06-01' = {
   name: 'waf-assoc'
   parent: afdProfile
@@ -632,8 +591,7 @@ resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2025-06-01' = {
       wafPolicy: { id: afdWaf.id }
       associations: [
         {
-          // Implicit dependency on afdDomains
-          domains: [ for d in afdDomains: { id: d.id } ]
+          domains: [ for (d, i) in afdCustomDomains: { id: afdDomains[i].id } ]
           patternsToMatch: [ '/*' ]
         }
       ]
