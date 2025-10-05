@@ -253,17 +253,18 @@ properties: {
 }
 
 
-// ✅ Enable Static Website on the blob service
-resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
+// ✅ Replace your current blobService block with this
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2021-09-01' = {
   name: 'default'
   parent: sa
   properties: {
-    // optional hygiene; safe defaults
+    // optional hygiene
     isVersioningEnabled: false
     deleteRetentionPolicy: {
       enabled: true
       days: 7
     }
+    // static website (typed in this API version)
     staticWebsite: {
       enabled: true
       indexDocument: staticIndex
@@ -271,6 +272,7 @@ resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01'
     }
   }
 }
+
 
 
 // -----------------------
@@ -564,7 +566,8 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
   properties: {
     order: 1
     conditions: []
-   actions: [
+// ✅ Replace just the actions array inside your afdRule with this
+actions: [
   {
     name: 'ModifyResponseHeader'
     parameters: {
@@ -573,8 +576,8 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
       headerName: 'Strict-Transport-Security'
       value: 'max-age=31536000; includeSubDomains; preload'
     }
-  }
-  {
+  },
+  { // <-- comma was missing here
     name: 'ModifyResponseHeader'
     parameters: {
       typeName: 'DeliveryRuleHeaderActionParameters'
