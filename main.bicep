@@ -254,23 +254,23 @@ properties: {
 
 
 // ✅ Replace your current blobService block with this
-resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2021-09-01' = {
+resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   name: 'default'
   parent: sa
-  properties: {
+  // use any(...) to bypass strict typing on staticWebsite
+  properties: any({
     // optional hygiene
     isVersioningEnabled: false
     deleteRetentionPolicy: {
       enabled: true
       days: 7
     }
-    // static website (typed in this API version)
     staticWebsite: {
       enabled: true
       indexDocument: staticIndex
       errorDocument404Path: static404
     }
-  }
+  })
 }
 
 
@@ -510,42 +510,13 @@ resource afdOg 'Microsoft.Cdn/profiles/originGroups@2025-06-01' = {
   }
 }
 
-// RuleSet (parent for 'addSecHeaders' rule)
-resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2025-06-01' = {
-  name: afdRuleSetName
-  parent: afdProfile
-}
-
-// Origin group (under profile)
-resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2025-06-01' = {
-  name: afdOriginName
-  parent: afdOg
-  properties: {
-    hostName: storageWebHost
-    originHostHeader: storageWebHost
-    httpPort: 80
-    httpsPort: 443
-
-    // AFD Premium Shared Private Link → Storage (Static Website = groupId 'web')
-    sharedPrivateLinkResource: {
-  groupId: 'web'
-  privateLink: { id: sa.id }
-  privateLinkLocation: afdPrivateLinkLocation     // <-- was: location
-  requestMessage: 'AFD → Storage Static Website private link'
-}
-  }
-}
-
 
 
 // Route — add explicit dependsOn on the origin to avoid race with SPLR
+// Route
 resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
   name: afdRouteName
   parent: afdEndpoint
-  dependsOn: [
-    for d in afdDomains: d
-    afdOrigin   // <— add this line
-  ]
   properties: {
     originGroup: { id: afdOg.id }
     patternsToMatch: [ '/*' ]
@@ -553,11 +524,34 @@ resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
     forwardingProtocol: 'HttpsOnly'
     supportedProtocols: [ 'Http', 'Https' ]
     linkToDefaultDomain: 'Enabled'
-    customDomains: [ for id in afdDomainIds: { id: id } ]
+    // iterate the parameter array and index into the collection
+    customDomains: [ for (d, i) in afdCustomDomains: { id: afdDomains[i].id } ]
     ruleSets: [ { id: afdRuleSet.id } ]
   }
 }
 
+// WAF → domains association
+resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2025-06-01' = {
+  name: 'waf-assoc'
+  parent: afdProfile
+  properties: {
+    parameters: {
+      type: 'WebApplicationFirewall'
+      wafPolicy: { id: afdWaf.id }
+      associations: [
+        {
+          domains: [ for (d, i) in afdCustomDomains: { id: afdDomains[i].id } ]
+          patternsToMatch: [ '/*' ]
+        }
+      ]
+    }
+  }
+}
+
+resource afdRuleSet 'Microsoft.Cdn/profiles/ruleSets@2025-06-01' = {
+  name: afdRuleSetName
+  parent: afdProfile
+}
 
 // Optional: RuleSet to add security headers (older API to avoid typeName warnings)
 resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
@@ -566,31 +560,34 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
   properties: {
     order: 1
     conditions: []
-// ✅ Replace just the actions array inside your afdRule with this
-actions: [
-  {
-    name: 'ModifyResponseHeader'
-    parameters: {
-      typeName: 'DeliveryRuleHeaderActionParameters'
-      headerAction: 'Overwrite'
-      headerName: 'Strict-Transport-Security'
-      value: 'max-age=31536000; includeSubDomains; preload'
-    }
-  },
-  { // <-- comma was missing here
-    name: 'ModifyResponseHeader'
-    parameters: {
-      typeName: 'DeliveryRuleHeaderActionParameters'
-      headerAction: 'Overwrite'
-      headerName: 'X-Content-Type-Options'
-      value: 'nosniff'
-    }
-  }
-]
-
+resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
+  name: 'addSecHeaders'
+  parent: afdRuleSet
+  properties: {
+    order: 1
+    conditions: []
+    actions: [
+      {
+        name: 'ModifyResponseHeader'
+        parameters: {
+          typeName: 'DeliveryRuleHeaderActionParameters'
+          headerAction: 'Overwrite'
+          headerName: 'Strict-Transport-Security'
+          value: 'max-age=31536000; includeSubDomains; preload'
+        }
+      },
+      {
+        name: 'ModifyResponseHeader'
+        parameters: {
+          typeName: 'DeliveryRuleHeaderActionParameters'
+          headerAction: 'Overwrite'
+          headerName: 'X-Content-Type-Options'
+          value: 'nosniff'
+        }
+      }
+    ]
   }
 }
-
 
 
 // -----------------------
@@ -605,6 +602,7 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-04-15' = {
   sku: {
     name: 'Premium_AzureFrontDoor'
   }
+
   properties: {
     policySettings: {
       enabledState: 'Enabled'
@@ -628,20 +626,21 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-04-15' = {
 resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2025-06-01' = {
   name: 'waf-assoc'
   parent: afdProfile
-  dependsOn: [ for d in afdDomains: d ]
   properties: {
     parameters: {
       type: 'WebApplicationFirewall'
       wafPolicy: { id: afdWaf.id }
       associations: [
         {
-          domains: [ for id in afdDomainIds: { id: id } ]
+          // Implicit dependency on afdDomains
+          domains: [ for d in afdDomains: { id: d.id } ]
           patternsToMatch: [ '/*' ]
         }
       ]
     }
   }
 }
+
 
 // -----------------------
 // Outputs
