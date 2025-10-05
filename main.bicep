@@ -536,11 +536,14 @@ resource afdOrigin 'Microsoft.Cdn/profiles/originGroups/origins@2025-06-01' = {
 
 
 
-// Route (under endpoint) (adds dependsOn so custom domains exist first)
+// Route — add explicit dependsOn on the origin to avoid race with SPLR
 resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
   name: afdRouteName
   parent: afdEndpoint
-  dependsOn: [ for d in afdDomains: d ]
+  dependsOn: [
+    for d in afdDomains: d
+    afdOrigin   // <— add this line
+  ]
   properties: {
     originGroup: { id: afdOg.id }
     patternsToMatch: [ '/*' ]
@@ -549,7 +552,7 @@ resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
     supportedProtocols: [ 'Http', 'Https' ]
     linkToDefaultDomain: 'Enabled'
     customDomains: [ for id in afdDomainIds: { id: id } ]
-    ruleSets: [ { id: afdRuleSet.id } ] // <— associate your ruleset so headers apply
+    ruleSets: [ { id: afdRuleSet.id } ]
   }
 }
 
