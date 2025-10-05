@@ -8,8 +8,37 @@
 targetScope = 'resourceGroup'
 
 // -----------------------
+//W A F Parameters
+// -----------------------
+
+@description('The name of the WAF policy')
+param wafPolicyName string
+
+@description('WAF mode at policy level.')
+@allowed([
+  'Detection'
+  'Prevention'
+])
+param wafMode string = 'Prevention'
+
+@description('Type of Action based on the match filter. Must be Allow, Block or Log.')
+@allowed([
+  'Allow'
+  'Block'
+  'Log'
+])
+param IPfilteringAction string = 'Block'
+
+@description('CIDR or IP to match (e.g. 203.0.113.0/24 or 198.51.100.10)')
+param IPMatch string = '203.0.113.0/24'
+
+
+// -----------------------
 // Parameters
 // -----------------------
+
+
+
 @description('Deployment environment tag (e.g., dev/test/prod).')
 param environment string = 'prod'
 
@@ -28,9 +57,6 @@ param domainName string = ''
 
 @description('Custom domains to attach to AFD (e.g., ["example.com","example.co"]).')
 param afdCustomDomains array = empty(domainName) ? [] : [domainName]
-
-@description('Name for the AFD WAF policy.')
-param wafPolicyName string
 
 @description('Reserved for future Data Factory module; not used in this template (kept to match params).')
 param adfname string = ''
@@ -559,14 +585,16 @@ resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
 }
 
 // WAF policy (current/stable API)
-resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
+
+// ✅ CDN/AFD WAF policy (correct RP + required SKU)
+resource cdnWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
   name: wafPolicyName
   location: 'Global'
-  sku: { name: 'Premium_AzureFrontDoor' }
+  sku: { name: 'Premium_AzureFrontDoor' } // or Standard_AzureFrontDoor
   properties: {
     policySettings: {
       enabledState: 'Enabled'
-      mode: 'Prevention'
+      mode: wafMode
       defaultCustomBlockResponseStatusCode: 403
     }
     managedRules: {
@@ -580,14 +608,14 @@ resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2024-02-01' = {
   }
 }
 
-// Associate WAF to the custom domains
+// ✅ Associate the CDN WAF to AFD (implicit deps via ids)
 resource afdSecPolicy 'Microsoft.Cdn/profiles/securityPolicies@2025-06-01' = {
   name: 'waf-assoc'
   parent: afdProfile
   properties: {
     parameters: {
       type: 'WebApplicationFirewall'
-      wafPolicy: { id: afdWaf.id }
+      wafPolicy: { id: cdnWaf.id }
       associations: [
         {
           domains: [ for (d, i) in afdCustomDomains: { id: afdDomains[i].id } ]
