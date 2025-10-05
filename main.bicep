@@ -13,6 +13,9 @@ targetScope = 'resourceGroup'
 @description('Deployment environment tag (e.g., dev/test/prod).')
 param environment string = 'prod'
 
+@description('Create internal Private Endpoints in the VNet for admin/testing.')
+param createInternalStoragePE bool = true
+ 
 @description('Region for the AFD Private Link endpoint (pick a supported region near your origin, e.g., eastus2).')
 param afdPrivateLinkLocation string = 'eastus2'
 
@@ -291,6 +294,86 @@ resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-
   properties: {
     virtualNetwork: { id: vnet.id }
     registrationEnabled: false
+  }
+}
+
+//--pee private endpoint zones---
+
+// -------- Internal Private Endpoints to Storage (Blob + Static Website) --------
+
+// Private Endpoint: Blob
+resource peBlob 'Microsoft.Network/privateEndpoints@2023-09-01' = if (createInternalStoragePE) {
+  name: 'pe-${storageName}-blob'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'blob-pls'
+        properties: {
+          privateLinkServiceId: sa.id
+          groupIds: [ 'blob' ]
+          requestMessage: 'VNet access to Storage Blob'
+        }
+      }
+    ]
+  }
+}
+
+// DNS zone group for Blob PE → privatelink.blob.*
+resource peBlobDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2020-05-01' = if (createInternalStoragePE) {
+  name: 'pdzg-blob'
+  parent: peBlob
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'blob-zone'
+        properties: {
+          privateDnsZoneId: pdzBlob.id
+        }
+      }
+    ]
+  }
+}
+
+// Private Endpoint: Static Website (web) subresource
+resource peWeb 'Microsoft.Network/privateEndpoints@2023-09-01' = if (createInternalStoragePE) {
+  name: 'pe-${storageName}-web'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: resourceId('Microsoft.Network/virtualNetworks/subnets', vnetName, peSubnetName)
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'web-pls'
+        properties: {
+          privateLinkServiceId: sa.id
+          groupIds: [ 'web' ] // static website subresource
+          requestMessage: 'VNet access to Storage Static Website'
+        }
+      }
+    ]
+  }
+}
+
+// DNS zone group for Web PE → privatelink.web.*
+resource peWebDns 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2020-05-01' = if (createInternalStoragePE) {
+  name: 'pdzg-web'
+  parent: peWeb
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'web-zone'
+        properties: {
+          privateDnsZoneId: pdzWeb.id
+        }
+      }
+    ]
   }
 }
 
