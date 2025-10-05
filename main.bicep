@@ -257,15 +257,21 @@ properties: {
 resource blobService 'Microsoft.Storage/storageAccounts/blobServices@2023-01-01' = {
   name: 'default'
   parent: sa
-  // Use `any()` to avoid strict type warnings on this property block.
-  properties: any({
+  properties: {
+    // optional hygiene; safe defaults
+    isVersioningEnabled: false
+    deleteRetentionPolicy: {
+      enabled: true
+      days: 7
+    }
     staticWebsite: {
       enabled: true
       indexDocument: staticIndex
       errorDocument404Path: static404
     }
-  })
+  }
 }
+
 
 // -----------------------
 // (Optional/Internal) Private DNS zones + VNet links + PEs
@@ -286,7 +292,7 @@ resource pdzWeb 'Microsoft.Network/privateDnsZones@2020-06-01' = {
 
 
 
-// Replace your current pdzWebLink block with this (no dependsOn needed)
+//(no dependsOn needed)
 resource pdzWebLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2020-06-01' = {
   name: '${vnet.name}-link'
   parent: pdzWeb
@@ -549,7 +555,6 @@ resource afdRoute 'Microsoft.Cdn/profiles/afdEndpoints/routes@2025-06-01' = {
 
 
 // Optional: RuleSet to add security headers (older API to avoid typeName warnings)
-// REPLACE your existing afdRule block with this:
 resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
   name: 'addSecHeaders'
   parent: afdRuleSet
@@ -588,8 +593,7 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
 // -----------------------
 // WAF policy (Standard AFD) — fixed for current API + ruleset
 // -----------------------
-// REPLACE your existing afdWaf block with this:
-resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-06-01' = {
+resource afdWaf 'Microsoft.Cdn/cdnWebApplicationFirewallPolicies@2025-04-15' = {
   name: wafPolicyName
   location: 'Global'
   sku: {
