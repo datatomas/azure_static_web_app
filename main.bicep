@@ -529,8 +529,7 @@ resource afdRule 'Microsoft.Cdn/profiles/ruleSets/rules@2025-06-01' = {
           headerName: 'Strict-Transport-Security'
           value: 'max-age=31536000; includeSubDomains; preload'
         }
-      },
-      {
+      },{
         name: 'ModifyResponseHeader'
         parameters: {
           typeName: 'DeliveryRuleHeaderActionParameters'
