@@ -1,0 +1,32 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "frontDoorProfileName": {
+      "value": "afdp-transversal-hub"
+    },
+    "endpointName": {
+      "value": "cargagpe-prb"
+    },
+    "routeName": {
+      "value": "rt-cargagpe-prb-microsites"
+    },
+    "originGroupName": {
+      "value": "og-rt-login-cargagpe-prb"
+    },
+    "ruleSetNames": {
+      "value": [
+        "cargagpeprbmicrositesredirects"
+      ]
+    },
+    "patternsToMatch": {
+      "value": [
+        "/webLogin/*",
+        "/webUpload/*",
+        "/websProjectsMenu/*",
+        "/webNavbar/*",
+        "/webRootConfig/*"
+      ]
+    }
+  }
+}
