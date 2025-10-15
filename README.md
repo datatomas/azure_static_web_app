@@ -11,7 +11,7 @@ File / Folder	Purpose
 main.bicep	Core Bicep template defining all resources
 params/static_storage_afd_params.json	Parameters for static storage account and AFD profile deployment
 params/afd-new-rule-sets-params.json	Parameters to create shared AFD rewrite rule set
-params/afd-new-route-existing-ep-<microsite>.json	Parameters for each microsite’s AFD route definition
+params/afd-new-route-existing-ep-<microsite>.json	Parameters for each microsite’s AFD route definition (must be customized per site)
 runners/afd-generic-rn.sh	Generic runner to deploy any Azure Front Door route
 runners/deploy_main_static.sh	Main deployment script that orchestrates all static sites and AFD routes
 README.md	Documentation (this file)
@@ -30,10 +30,12 @@ The repository now supports deploying **multiple static microsites** within the 
 Each microsite has its own route configuration and rewrite rule for SPA fallback behavior.
 ### How It Works
 1. Each microsite has a dedicated parameter file under `/params/` named like `afd-new-route-existing-ep-<microsite>.json`.
-2. The shared static storage serves multiple site folders (e.g., `/login-spa`, `/proyectos`, `/operaciones`).
+2. You must **customize each parameter file** to match your own microsite folder name, route name, origin group, and rule set.
+   - Example: `/login-spa`, `/proyectos`, `/operaciones`.
 3. The script `deploy_main_static.sh` loops through all microsite parameter files and deploys their respective Front Door routes.
 4. A single Front Door rule set (e.g., `cargagpeprbmicrosites`) rewrites requests to `index.html` for SPAs.
 5. A purge is triggered automatically after deployment to refresh cached content in AFD.
+6. Run the script once for each microsite you add to the parameters folder.
 ### Example structure:
 ```
 azure_static_web_app/
@@ -54,8 +56,11 @@ azure_static_web_app/
 ./runners/deploy_main_static.sh
 ```
 This command automatically deploys all microsite routes defined under `/params/` using the shared static storage and Front Door profile.
+
+If you create additional microsites, simply add a new parameter file following the same naming pattern and rerun the script.
 ✅ Benefits
 - Single Front Door and Storage account serve multiple SPAs
 - Centralized rewrite rules and WAF policy
 - Fully automated multi-route deployment
 - Simplified maintenance and consistent networking setup
+- Easy scalability: just drop in another param file and redeploy
