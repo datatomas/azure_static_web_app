@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "frontDoorProfileName": { "value": "afdp-transversal-hub" },
+    "endpointName":        { "value": "cargagpe-prb" },
+    "rulesetName":         { "value": "cargagpeprbmicrositesredirects" },
+
+    "rewriteRules": {
+      "value": [
+        {
+          "ruleName": "DeliveryRuleUrlPathWebLogin",
+          "path": "/webLogin",
+          "operator": "BeginsWith",
+          "order": 10,
+          "preserveUnmatchedPath": false
+        },
+        {
+          "ruleName": "DeliveryRuleUrlPathWebUpload",
+          "path": "/webUpload",
+          "operator": "Equal",
+          "order": 20,
+          "preserveUnmatchedPath": false
+        },
+        {
+          "ruleName": "DeliveryRuleUrlPathprojectsmenu",
+          "path": "/websProjectsMenu",
+          "operator": "Equal",
+          "order": 30,
+          "preserveUnmatchedPath": false
+        },
+        {
+          "ruleName": "DeliveryRuleUrlPathnavbar",
+          "path": "/webNavbar",
+          "operator": "Equal",
+          "order": 40,
+          "preserveUnmatchedPath": false
+        },
+        {
+          "ruleName": "DeliveryRuleUrlPathwebroot",
+          "path": "/webRootConfig",
+          "operator": "Equal",
+          "order": 50,
+          "preserveUnmatchedPath": false
+        }
+      ]
+    },
+
+    "appendIndexHtml": { "value": true }
+  }
+}
