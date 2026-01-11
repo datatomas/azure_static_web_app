@@ -1,4 +1,4 @@
-🌐 Azure Static Web App Deployment (Bicep)
+Azure Static Web App Deployment (Bicep)
 This repository contains the **Bicep infrastructure-as-code templates** for deploying one or multiple **Azure Static Web Apps** to Azure Front Door. It automates provisioning of the following resources:
 •	- Static Web App(s) backed by Azure Storage (Static Website enabled)
 - Azure Front Door with custom domain + HTTPS + WAF
@@ -6,7 +6,7 @@ This repository contains the **Bicep infrastructure-as-code templates** for depl
 - Private DNS Zones for `privatelink.blob.core.windows.net`
 - Network Security Groups for subnets
 - Integration with an existing VNet and WAF Policy
-🧩 Repository Structure
+Repository Structure
 File / Folder	Purpose
 main.bicep	Core Bicep template defining all resources
 params/static_storage_afd_params.json	Parameters for static storage account and AFD profile deployment
@@ -18,14 +18,14 @@ README.md	Documentation (this file)
 
 Run from your Linux distribution:
 ./runners/deploy_main_static.sh "pueblitoboyacense" rg-posada-prd mexicocentral ./main.bicep ./params/static_storage_afd_params.json
-⚙️ Prerequisites
+Prerequisites
 •	- Azure CLI ≥ 2.60
 - Logged in: `az login`
 - Target subscription set:
   ```bash
   az account set --subscription "<your-subscription-id>"
   ```
-🧭 Multi‑Site Support (New Feature)
+Multi‑Site Support (New Feature)
 The repository now supports deploying **multiple static microsites** within the same Azure Storage account and Front Door profile.
 Each microsite has its own route configuration and rewrite rule for SPA fallback behavior.
 ### How It Works
@@ -58,7 +58,7 @@ azure_static_web_app/
 This command automatically deploys all microsite routes defined under `/params/` using the shared static storage and Front Door profile.
 
 If you create additional microsites, simply add a new parameter file following the same naming pattern and rerun the script.
-✅ Benefits
+Benefits
 - Single Front Door and Storage account serve multiple SPAs
 - Centralized rewrite rules and WAF policy
 - Fully automated multi-route deployment
